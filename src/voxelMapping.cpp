@@ -75,6 +75,7 @@ double calc_cov_time_mean = 0;
 double scan_match_time_mean = 0;
 double ekf_solve_time_mean = 0;
 double map_update_time_mean = 0;
+double pub_time_mean = 0;
 
 mutex mtx_buffer;
 condition_variable sig_buffer;
@@ -343,6 +344,7 @@ bool sync_packages(MeasureGroup &meas) {
 
 void publish_frame_world(const ros::Publisher &pubLaserCloudFullRes,
                          const int point_skip) {
+  if ( pubLaserCloudFullRes.getNumSubscribers() == 0 ) return;
   PointCloudXYZI::Ptr laserCloudFullRes(dense_map_en ? feats_undistort
                                                      : feats_down_body);
   int size = laserCloudFullRes->points.size();
@@ -366,6 +368,7 @@ void publish_frame_world(const ros::Publisher &pubLaserCloudFullRes,
 void publish_effect_world(const ros::Publisher &pubLaserCloudEffect,
                           const ros::Publisher &pubPointWithCov,
                           const std::vector<ptpl> &ptpl_list) {
+  if ( pubLaserCloudEffect.getNumSubscribers() == 0 && pubPointWithCov.getNumSubscribers() == 0 ) return;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr effect_cloud_world(
       new pcl::PointCloud<pcl::PointXYZRGB>);
   PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(effct_feat_num, 1));
@@ -417,6 +420,7 @@ void publish_effect_world(const ros::Publisher &pubLaserCloudEffect,
   }
   pubPointWithCov.publish(ma_line);
 
+  if ( pubLaserCloudEffect.getNumSubscribers() == 0 ) return;
   sensor_msgs::PointCloud2 laserCloudFullRes3;
   pcl::toROSMsg(*effect_cloud_world, laserCloudFullRes3);
   laserCloudFullRes3.header.stamp =
@@ -426,6 +430,7 @@ void publish_effect_world(const ros::Publisher &pubLaserCloudEffect,
 }
 
 void publish_no_effect(const ros::Publisher &pubLaserCloudNoEffect) {
+  if ( pubLaserCloudNoEffect.getNumSubscribers() == 0 ) return;
   sensor_msgs::PointCloud2 laserCloudFullRes3;
   pcl::toROSMsg(*laserCloudNoeffect, laserCloudFullRes3);
   laserCloudFullRes3.header.stamp =
@@ -435,6 +440,7 @@ void publish_no_effect(const ros::Publisher &pubLaserCloudNoEffect) {
 }
 
 void publish_effect(const ros::Publisher &pubLaserCloudEffect) {
+  if ( pubLaserCloudEffect.getNumSubscribers() == 0 ) return;
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr effect_cloud_world(
       new pcl::PointCloud<pcl::PointXYZRGB>);
   PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI(effct_feat_num, 1));
@@ -494,6 +500,7 @@ void publish_odometry(const ros::Publisher &pubOdomAftMapped) {
 }
 
 void publish_mavros(const ros::Publisher &mavros_pose_publisher) {
+  if ( mavros_pose_publisher.getNumSubscribers() == 0 ) return;
   msg_body_pose.header.stamp = ros::Time::now();
   msg_body_pose.header.frame_id = "camera_odom_frame";
   set_posestamp(msg_body_pose.pose);
@@ -501,6 +508,7 @@ void publish_mavros(const ros::Publisher &mavros_pose_publisher) {
 }
 
 void publish_path(const ros::Publisher pubPath) {
+  if ( pubPath.getNumSubscribers() == 0 ) return;
   set_posestamp(msg_body_pose.pose);
   msg_body_pose.header.stamp = ros::Time::now();
   msg_body_pose.header.frame_id = "camera_init";
@@ -597,8 +605,7 @@ int main(int argc, char **argv) {
   PointCloudXYZI::Ptr corr_normvect(new PointCloudXYZI(100000, 1));
   int frame_num = 0;
   double deltaT, deltaR, aver_time_consu = 0;
-  bool flg_EKF_inited, flg_EKF_converged, EKF_stop_flg = 0,
-                                          is_first_frame = true;
+  bool flg_EKF_inited = false, flg_EKF_converged = false, EKF_stop_flg = false, is_first_frame = true;
   downSizeFilterSurf.setLeafSize(filter_size_surf_min, filter_size_surf_min,
                                  filter_size_surf_min);
 
@@ -717,7 +724,7 @@ int main(int argc, char **argv) {
                          feats_undistort->points[i].y,
                          feats_undistort->points[i].z);
           // if z=0, error will occur in calcBodyCov. To be solved
-          if (point_this[2] == 0) {
+          if (std::abs(point_this[2]) < 1e-3) {
             point_this[2] = 0.001;
           }
           M3D cov;
@@ -785,7 +792,7 @@ int main(int argc, char **argv) {
         V3D point_this(feats_down_body->points[i].x,
                        feats_down_body->points[i].y,
                        feats_down_body->points[i].z);
-        if (point_this[2] == 0) {
+        if (std::abs(point_this[2]) < 1e-3) {
           point_this[2] = 0.001;
         }
         M3D cov;
@@ -891,6 +898,9 @@ int main(int argc, char **argv) {
         for (int i = 0; i < effct_feat_num; i++) {
           const PointType &laser_p = laserCloudOri->points[i];
           V3D point_this(laser_p.x, laser_p.y, laser_p.z);
+          if (std::abs(point_this[2]) < 1e-3) {
+            point_this[2] = 0.001;
+          }
           M3D cov;
           if (calib_laser) {
             calcBodyCov(point_this, ranging_cov, CALIB_ANGLE_COV, cov);
@@ -1057,6 +1067,7 @@ int main(int argc, char **argv) {
       total_time = t_downsample + scan_match_time + solve_time +
                    map_incremental_time + undistort_time + calc_point_cov_time;
       /******* Publish functions:  *******/
+      auto pub_start = std::chrono::high_resolution_clock::now();
       publish_odometry(pubOdomAftMapped);
       publish_path(pubPath);
       tf::Transform transform;
@@ -1069,11 +1080,11 @@ int main(int argc, char **argv) {
       q.setZ(geoQuat.z);
       transform.setRotation(q);
       transformLidar(state, p_imu, feats_down_body, world_lidar);
-      sensor_msgs::PointCloud2 pub_cloud;
-      pcl::toROSMsg(*world_lidar, pub_cloud);
-      pub_cloud.header.stamp =
-          ros::Time::now(); //.fromSec(last_timestamp_lidar);
-      pub_cloud.header.frame_id = "camera_init";
+//      sensor_msgs::PointCloud2 pub_cloud;
+//      pcl::toROSMsg(*world_lidar, pub_cloud);
+//      pub_cloud.header.stamp =
+//          ros::Time::now(); //.fromSec(last_timestamp_lidar);
+//      pub_cloud.header.frame_id = "camera_init";
       if (publish_point_cloud) {
         publish_frame_world(pubLaserCloudFullRes, pub_point_cloud_skip);
       }
@@ -1083,6 +1094,10 @@ int main(int argc, char **argv) {
       }
 
       publish_effect(pubLaserCloudEffect);
+
+      auto pub_end = std::chrono::high_resolution_clock::now();
+      const double pub_time = std::chrono::duration_cast<std::chrono::duration<double>>(pub_end - pub_start).count() * 1000;
+
 
       frame_num++;
       mean_raw_points = mean_raw_points * (frame_num - 1) / frame_num +
@@ -1111,6 +1126,10 @@ int main(int argc, char **argv) {
       aver_time_consu = aver_time_consu * (frame_num - 1) / frame_num +
                         (total_time) / frame_num;
 
+      pub_time_mean =
+          pub_time_mean * (frame_num - 1) / frame_num +
+          (pub_time) / frame_num;
+
       time_log_counter++;
       cout << "[ Time ]: "
            << "average undistort: " << undistort_time_mean << std::endl;
@@ -1126,6 +1145,9 @@ int main(int argc, char **argv) {
            << "average map incremental: " << map_update_time_mean << std::endl;
       cout << "[ Time ]: "
            << " average total " << aver_time_consu << endl;
+      cout << "[ Time ]: "
+           << " publish: " << pub_time << " avg: " << pub_time_mean << endl;
+
 
       if (write_kitti_log) {
         kitti_log(fp_kitti);
