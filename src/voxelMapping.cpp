@@ -31,6 +31,8 @@
 #include <visualization_msgs/MarkerArray.h>
 #include <voxel_map/States.h>
 
+//#define WITH_BUG_FIX // https://github.com/hku-mars/VoxelMap/issues/11
+
 #define INIT_TIME (0.0)
 #define CALIB_ANGLE_COV (0.01)
 bool calib_laser = false;
@@ -497,6 +499,7 @@ void publish_odometry(const ros::Publisher &pubOdomAftMapped) {
   br.sendTransform(tf::StampedTransform(transform, odomAftMapped.header.stamp,
                                         "camera_init", "aft_mapped"));
   pubOdomAftMapped.publish(odomAftMapped);
+  //std::cout << state.pos_end.transpose() << " " << geoQuat << std::endl;
 }
 
 void publish_mavros(const ros::Publisher &mavros_pose_publisher) {
@@ -734,9 +737,15 @@ int main(int argc, char **argv) {
           M3D point_crossmat;
           point_crossmat << SKEW_SYM_MATRX(point_this);
           cov = state.rot_end * cov * state.rot_end.transpose() +
+        #ifdef WITH_BUG_FIX // https://github.com/hku-mars/VoxelMap/issues/11
+                state.rot_end  *
+        #endif
                 (-point_crossmat) * state.cov.block<3, 3>(0, 0) *
-                    (-point_crossmat).transpose() +
-                state.cov.block<3, 3>(3, 3);
+                    (-point_crossmat).transpose()
+        #ifdef WITH_BUG_FIX // https://github.com/hku-mars/VoxelMap/issues/11
+                  * state.rot_end.transpose()
+        #endif
+                  +state.cov.block<3, 3>(3, 3);
           pv.cov = cov;
           pv_list.push_back(pv);
           Eigen::Vector3d sigma_pv = pv.cov.diagonal();
@@ -820,6 +829,7 @@ int main(int argc, char **argv) {
         std::vector<double> r_list;
         std::vector<ptpl> ptpl_list;
         /** LiDAR match based on 3 sigma criterion **/
+        //std::cout << "state: [" << state.rot_end.row(0) << "; " << state.rot_end.row(1) << "; " << state.rot_end.row(2) << "] p: " << state.pos_end.transpose() << std::endl;
 
         vector<pointWithCov> pv_list;
         std::vector<M3D> var_list;
@@ -837,8 +847,14 @@ int main(int argc, char **argv) {
           M3D rot_var = state.cov.block<3, 3>(0, 0);
           M3D t_var = state.cov.block<3, 3>(3, 3);
           cov = state.rot_end * cov * state.rot_end.transpose() +
-                (-point_crossmat) * rot_var * (-point_crossmat.transpose()) +
-                t_var;
+        #ifdef WITH_BUG_FIX // https://github.com/hku-mars/VoxelMap/issues/11
+                  state.rot_end *
+        #endif
+                (-point_crossmat) * rot_var * (-point_crossmat.transpose())
+        #ifdef WITH_BUG_FIX // https://github.com/hku-mars/VoxelMap/issues/11
+                  * state.rot_end.transpose()
+        #endif
+                  + t_var;
           pv.cov = cov;
           pv_list.push_back(pv);
           var_list.push_back(cov);
@@ -877,14 +893,14 @@ int main(int argc, char **argv) {
                 .count() *
             1000;
 
-        // cout << "[ Matching ]: Time:"
-        //      << std::chrono::duration_cast<std::chrono::duration<double>>(
-        //             scan_match_time_end - scan_match_time_start)
-        //                 .count() *
-        //             1000
-        //      << " ms  Effective feature num: " << effct_feat_num
-        //      << " All num:" << feats_down_body->size() << "  res_mean_last "
-        //      << res_mean_last << endl;
+//         cout << "[ Matching ]: Time:"
+//              << std::chrono::duration_cast<std::chrono::duration<double>>(
+//                     scan_match_time_end - scan_match_time_start)
+//                         .count() *
+//                     1000
+//              << " ms  Effective feature num: " << effct_feat_num
+//              << " All num:" << feats_down_body->size() << "  res_mean_last "
+//              << res_mean_last << endl;
 
         auto t_solve_start = std::chrono::high_resolution_clock::now();
 
@@ -908,6 +924,10 @@ int main(int argc, char **argv) {
             calcBodyCov(point_this, ranging_cov, angle_cov, cov);
           }
 
+          if ( !cov.allFinite() )
+          {
+              std::cerr << "i: " << i << " c: [" << cov.row(0) << " ; " << cov.row(1) << " ; " << cov.row(2) << "] p: " << point_this.transpose() << " ac: " << angle_cov << " rc: " << ranging_cov << std::endl;
+          }
           cov = state.rot_end * cov * state.rot_end.transpose();
           M3D point_crossmat;
           point_crossmat << SKEW_SYM_MATRX(point_this);
@@ -922,13 +942,10 @@ int main(int argc, char **argv) {
           R_inv(i) = 1.0 / (sigma_l + norm_vec.transpose() * cov * norm_vec);
           double ranging_dis = point_this.norm();
           laserCloudOri->points[i].intensity = sqrt(R_inv(i));
-          laserCloudOri->points[i].normal_x =
-              corr_normvect->points[i].intensity;
+          laserCloudOri->points[i].normal_x = corr_normvect->points[i].intensity;
           laserCloudOri->points[i].normal_y = sqrt(sigma_l);
-          laserCloudOri->points[i].normal_z =
-              sqrt(norm_vec.transpose() * cov * norm_vec);
-          laserCloudOri->points[i].curvature =
-              sqrt(sigma_l + norm_vec.transpose() * cov * norm_vec);
+          laserCloudOri->points[i].normal_z = sqrt(norm_vec.transpose() * cov * norm_vec);
+          laserCloudOri->points[i].curvature = sqrt(sigma_l + norm_vec.transpose() * cov * norm_vec);
 
           /*** calculate the Measuremnt Jacobian matrix H ***/
           V3D A(point_crossmat * state.rot_end.transpose() * norm_vec);
@@ -936,6 +953,12 @@ int main(int argc, char **argv) {
           Hsub_T_R_inv.col(i) << A[0] * R_inv(i), A[1] * R_inv(i),
               A[2] * R_inv(i), norm_p.x * R_inv(i), norm_p.y * R_inv(i),
               norm_p.z * R_inv(i);
+
+          if ( !Hsub_T_R_inv.col(i).allFinite() )
+          {
+              std::cerr << "i: " << i << " A: " << A.transpose() << " R_inv: " << R_inv(i) << " sl: " << sigma_l << " nv: " << norm_vec.transpose() << " c: [" << cov.row(0) << " ; " << cov.row(1) << " ; " << cov.row(2) << "] np: " << norm_p.getVector3fMap().transpose() << " H: " << Hsub_T_R_inv.col(i).transpose() << std::endl;
+          }
+
           /*** Measuremnt: distance to the closest surface/corner ***/
           meas_vec(i) = -norm_p.intensity;
         }
@@ -988,6 +1011,12 @@ int main(int argc, char **argv) {
 
           rot_add = solution.block<3, 1>(0, 0);
           t_add = solution.block<3, 1>(3, 0);
+
+//          std::cout << "HsubFin: " <<Hsub.allFinite() << " mv: " << meas_vec.allFinite() << " Htr: " << Hsub_T_R_inv.allFinite() << " hth: " << H_T_H.allFinite()
+//                    << " K1: " << K_1.allFinite() << " C: " << state.cov.allFinite()
+//                    << " K: " << K.allFinite() << " v: " << vec.allFinite() << " sp: " << state_propagat.rot_end.allFinite() << state_propagat.pos_end.allFinite() << std::endl;
+//          std::cout << "add: [" << rot_add.row(0) << "; " << rot_add.row(1) << "; " << rot_add.row(2) << "] p: " << t_add.transpose()  << " sol: " << solution.transpose() << std::endl;
+
 
           if ((rot_add.norm() * 57.3 < 0.01) && (t_add.norm() * 100 < 0.015)) {
             flg_EKF_converged = true;
@@ -1047,9 +1076,15 @@ int main(int argc, char **argv) {
         M3D point_crossmat = crossmat_list[i];
         M3D cov = body_var[i];
         cov = state.rot_end * cov * state.rot_end.transpose() +
+        #ifdef WITH_BUG_FIX // https://github.com/hku-mars/VoxelMap/issues/11
+                state.rot_end *
+        #endif
               (-point_crossmat) * state.cov.block<3, 3>(0, 0) *
-                  (-point_crossmat).transpose() +
-              state.cov.block<3, 3>(3, 3);
+                  (-point_crossmat).transpose()
+        #ifdef WITH_BUG_FIX // https://github.com/hku-mars/VoxelMap/issues/11
+                * state.rot_end.transpose()
+        #endif
+                + state.cov.block<3, 3>(3, 3);
         pv.cov = cov;
         pv_list.push_back(pv);
       }

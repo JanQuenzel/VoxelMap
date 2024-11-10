@@ -1242,6 +1242,12 @@ void calcBodyCov(Eigen::Vector3d &pb, const float range_inc,
   Eigen::Matrix<double, 3, 2> A = range * direction_hat * N;
   cov = direction * range_var * direction.transpose() +
         A * direction_var * A.transpose();
+
+  if ( !cov.allFinite() )
+  {
+      std::cerr << "range: " << range << " d: " << direction.transpose() << " dh: " << direction_hat.transpose() << " dv: " << direction_var.transpose() << " bv1: " << base_vector1.transpose() << " bv2: " << base_vector2.transpose() << " N: " << N <<std::endl;
+  }
+
 };
 
 #endif
